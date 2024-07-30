@@ -7,10 +7,6 @@ const readline = require('readline');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 
 class Nomis {
-    constructor() {
-        this.currentAppInitData = '';
-    }
-
     headers() {
         return {
             "Accept": "application/json, text/plain, */*",
@@ -27,8 +23,7 @@ class Nomis {
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-site",
-            "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-            "X-App-Init-Data": this.currentAppInitData
+            "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
         }
     }
 
@@ -68,7 +63,7 @@ class Nomis {
     async getTask(id, proxy) {
         const url = `https://cms-tg.nomis.cc/api/ton-twa-tasks/by-groups?user_id=${id}`;
         const headers = this.headers();
-        this.log(`${'Kiểm tra danh sách nhiệm vụ ...'.green}`);
+        this.log(`${'Lấy danh sách nhiệm vụ ...'.green}`);
         const config = {
             url,
             method: 'get',
@@ -130,30 +125,6 @@ class Nomis {
         return this.requestWithProxy(config, proxy);
     }
 
-    async getReferralData(user_id, proxy) {
-        const url = `https://cms-tg.nomis.cc/api/ton-twa-users/referrals-data?user_id=${user_id}`;
-        const headers = this.headers();
-        const config = {
-            url,
-            method: 'get',
-            headers
-        };
-        return this.requestWithProxy(config, proxy);
-    }
-
-    async claimReferral(user_id, proxy) {
-        const url = `https://cms-tg.nomis.cc/api/ton-twa-users/claim-referral`;
-        const headers = this.headers();
-        const payload = { user_id };
-        const config = {
-            url,
-            method: 'post',
-            headers,
-            data: payload
-        };
-        return this.requestWithProxy(config, proxy);
-    }
-
     log(msg) {
         console.log(`[*] ${msg}`);
     }
@@ -194,22 +165,13 @@ class Nomis {
             .replace(/\r/g, '')
             .split('\n')
             .filter(Boolean);
-    
+
         let firstFarmCompleteTime = null;
-    
+
         while (true) {
             for (let no = 0; no < data.length; no++) {
-                const appInitData = data[no];
+                const [telegram_user_id, telegram_username] = data[no].split('|');
                 const proxy = proxies[no];
-                this.currentAppInitData = appInitData;
-
-                const userMatch = appInitData.match(/user=%7B%22id%22%3A(\d+).*?%22username%22%3A%22(.*?)%22/);
-                if (!userMatch) {
-                    console.log(`Invalid app init data for entry ${no + 1}`);
-                    continue;
-                }
-
-                const [, telegram_user_id, telegram_username] = userMatch;
                 const referrer = "D0dA2sA2Vc"; // refcode
                 let proxyIP = '';
                 try {
@@ -220,20 +182,20 @@ class Nomis {
                 try {
                     const authResponse = await this.auth(telegram_user_id, telegram_username, referrer, proxy);
                     const profileData = authResponse.data;
-    
+
                     if (profileData && profileData.id) {
                         const userId = profileData.id;
                         
                         console.log(`========== Tài khoản ${no + 1} | ${telegram_username.green} | IP: ${proxyIP} ==========`);
-    
+
                         const farmDataResponse = await this.getProfile(userId, proxy);
                         const farmData = farmDataResponse.data;
                         const points = farmData.points / 1000;
                         const nextfarm = farmData.nextFarmClaimAt;
-    
+
                         this.log(`${'Balance:'.green} ${points}`);
                         let claimFarmSuccess = false;
-    
+
                         if (nextfarm) {
                             const nextFarmLocal = DateTime.fromISO(nextfarm, { zone: 'utc' }).setZone(DateTime.local().zoneName);
                             this.log(`${'Thời gian hoàn thành farm:'.green} ${nextFarmLocal.toLocaleString(DateTime.DATETIME_FULL)}`);
@@ -247,14 +209,13 @@ class Nomis {
                                     this.log(`${'Claim farm thành công!'.green}`);
                                     claimFarmSuccess = true;
                                 } catch (claimError) {
-                                    console.log(claimError);
                                     this.log(`${'Lỗi khi claim farm!'.red}`);
                                 }
                             }
                         } else {
                             claimFarmSuccess = true;
                         }
-    
+
                         if (claimFarmSuccess) {
                             try {
                                 await this.startFarm(userId, proxy);
@@ -263,23 +224,19 @@ class Nomis {
                                 this.log(`${'Lỗi khi start farm!'.red}`);
                             }
                         }
-    
+
                         try {
                             const getTaskResponse = await this.getTask(userId, proxy);
                             const tasks = getTaskResponse.data;
-    
+
                             const kiemtraTaskResponse = await this.kiemtraTask(userId, proxy);
                             const completedTasks = kiemtraTaskResponse.data.flatMap(taskGroup => taskGroup.ton_twa_tasks);
-    
+
                             const completedTaskIds = new Set(completedTasks.map(task => task.id));
-    
+
                             const pendingTasks = tasks.flatMap(taskGroup => taskGroup.ton_twa_tasks)
-                                .filter(task => 
-                                    task.reward > 0 && 
-                                    !completedTaskIds.has(task.id) &&
-                                    !['telegramAuth', 'pumpersToken', 'pumpersTrade'].includes(task.handler)
-                                );
-    
+                                .filter(task => task.reward > 0 && !completedTaskIds.has(task.id));
+
                             for (const task of pendingTasks) {
                                 const result = await this.claimTask(userId, task.id, proxy);
                                 this.log(`${'Làm nhiệm vụ'.yellow} ${task.title.white}... ${'Trạng thái:'.white} ${'Hoàn thành'.green}`);
@@ -288,40 +245,6 @@ class Nomis {
                             this.log(`${'Lỗi khi làm nhiệm vụ'.red}`);
                             console.log(taskError);
                         }
-
-                        try {
-                            const referralDataResponse = await this.getReferralData(userId, proxy);
-                            const referralData = referralDataResponse.data;
-                            if (referralData && referralData.claimAvailable > 0) {
-                                if (referralData.nextReferralsClaimAt) {
-                                    const nextReferralsClaimLocal = DateTime.fromISO(referralData.nextReferralsClaimAt, { zone: 'utc' }).setZone(DateTime.local().zoneName);
-                                    this.log(`${'Thời gian claim referrals tiếp theo:'.green} ${nextReferralsClaimLocal.toLocaleString(DateTime.DATETIME_FULL)}`);
-                        
-                                    const now = DateTime.local();
-                                    if (now > nextReferralsClaimLocal) {
-                                        const claimResponse = await this.claimReferral(userId, proxy);
-                                        if (claimResponse.data.result) {
-                                            this.log(`${'Claim referrals thành công!'.green}`);
-                                        } else {
-                                            this.log(`${'Claim referrals thất bại!'.red}`);
-                                        }
-                                    }
-                                } else {
-                                    this.log(`${'Thời gian claim referrals tiếp theo: null. Thực hiện claim...'.green}`);
-                                    const claimResponse = await this.claimReferral(userId, proxy);
-                                    if (claimResponse.data.result) {
-                                        this.log(`${'Claim referrals thành công!'.green}`);
-                                    } else {
-                                        this.log(`${'Claim referrals thất bại!'.red}`);
-                                    }
-                                }
-                            } else {
-                                this.log(`${'Không có claim referrals khả dụng'.yellow}`);
-                            }
-                        } catch (error) {
-                            this.log(`${'Lỗi khi xử lý referrals'.red}`);
-                            console.log(error);
-                        }                        
                     } else {
                         this.log(`${'Lỗi: Không tìm thấy ID người dùng'.red}`);
                     }
@@ -330,18 +253,18 @@ class Nomis {
                     console.log(error);
                 }
             }
-    
+
             let waitTime;
             if (firstFarmCompleteTime) {
                 const now = DateTime.local();
                 const diff = firstFarmCompleteTime.diff(now, 'seconds').seconds;
                 waitTime = Math.max(0, diff);
-				} else {
+            } else {
                 waitTime = 15 * 60; 
             }
             await this.waitWithCountdown(Math.floor(waitTime));
         }
-    }    
+    }
 }
 
 if (require.main === module) {
